@@ -1,3 +1,6 @@
+- Best to install in openemr/modules or at least 2 levels above root.
+- i.e. openemr/modules/oe-module-api-explorer
+
 # OpenEMR FHIR/API Client Explorer Web App
 
 This example project demonstrates how to interact with the OpenEMR OAuth2, FHIR, and Standard REST APIs using various OAuth2 grant types. It provides a working reference implementation for developers building apps that integrate with OpenEMR’s API infrastructure.
