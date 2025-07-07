@@ -26,7 +26,7 @@ Educational reference implementation for developers building apps that integrate
 2. Navigate to `/openemr/modules/oe-module-api-explorer/`
 3. Edit `config.php` if needed (default localhost configuration works for most setups)
 4. Access the explorer at `oeApiExplorer.php`
-5. Register clients from within the app:
+5. Register clients from within the app(Register will create all(3) required client types and keys):
     - Select desired API Site from dropdown
     - Click "Register Clients" button
     - Repeat for each site you want to use
