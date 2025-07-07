@@ -20,7 +20,6 @@ $api_site = $selectedSite;
 // List of supported OpenEMR sites for API testing
 $apiSites = [
     'localhost'                         => 'https://localhost/openemr', // Replace with your local OpenEMR URL
-    'dev-xampp-domain'          => 'https://opensourcedemr.us',
     'remote-ubuntu-php-8.3'   => 'https://six.openemr.io/a/openemr', // Remotes need work. Could be proxie issues. May need to set override in Config connector for proxy!
     'remote-alpine-php-8.2'     => 'https://two.openemr.io/a/openemr',
     'remote-alpine-php-8.3'     => 'https://one.openemr.io/a/openemr',
