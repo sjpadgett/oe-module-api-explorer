@@ -344,14 +344,15 @@ try {
             (array) ($writeMatrix[$resource]['needs'] ?? []),
             static fn(string $need): bool => ($plan['context'][$need] ?? null) === null
         ));
-        $missingScope = ScopeAlgebra::predict($tokenScopes, 'api:fhir', (string) $resource, 'c') !== 'allow';
+        // api:fhir is added because OpenEMR omits it from the token response's scope string.
+        $missingScope = ScopeAlgebra::predict(array_merge($tokenScopes, ['api:fhir']), 'api:fhir', (string) $resource, 'c') !== 'allow';
         if (($writeMatrix[$resource]['status'] ?? 'supported') !== 'supported') {
             $skipped[$resource] = 'route answers 405 (not implemented)';
         } elseif ($unresolved !== []) {
             $skipped[$resource] = 'unresolved context: ' . implode(', ', $unresolved);
         } elseif ($missingScope) {
             $skipped[$resource] = 'token grants no create on ' . $resource
-                . ' (needs api:fhir plus ' . $writeMatrix[$resource]['scope'] . ' or an equivalent v2 / system scope)';
+                . ' (needs ' . $writeMatrix[$resource]['scope'] . ' or an equivalent v2 / system scope)';
         } else {
             $runnable[] = $resource;
         }

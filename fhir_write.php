@@ -256,6 +256,10 @@ try {
         case 'catalog':
             $catalog = [];
             $tokenScopes = explode(' ', trim((string) ($_SESSION['access_token_scopes'] ?? '')));
+            // The scope string OpenEMR returns with a token leaves out api:fhir on purpose
+            // (IdTokenSMARTResponse::getScopeString), though the token carries it. Judging the
+            // resource scopes behind that gate reported every resource as "scope missing".
+            $gatedScopes = array_merge($tokenScopes, ['api:fhir']);
             foreach ($writeMatrix as $resource => $definition) {
                 $catalog[$resource] = [
                     'status' => $definition['status'] ?? 'supported',
@@ -263,7 +267,7 @@ try {
                     // Any spelling that grants create counts: user/ or system/, v1 .write or v2
                     // .c*. Matching only the one v1 string reported "scope missing" for tokens
                     // that could write perfectly well.
-                    'hasScope' => ScopeAlgebra::predict($tokenScopes, 'api:fhir', (string) $resource, 'c') === 'allow',
+                    'hasScope' => ScopeAlgebra::predict($gatedScopes, 'api:fhir', (string) $resource, 'c') === 'allow',
                     'scope' => $definition['scope'],
                     'acl' => $definition['acl'],
                     'verbs' => $definition['verbs'],
