@@ -3,8 +3,10 @@
 // scope_resources.php
 session_start();
 
-if ($_GET['api_site']) {
-    $api_site = $_GET['api_site'] ?? $_SESSION['selectedSite'] ?? 'localhost';
+// Guarded: this file answers JSON, and an "Undefined array key" notice would be emitted
+// into the response body, breaking the parse rather than producing a readable error.
+if (!empty($_GET['api_site'])) {
+    $api_site = $_GET['api_site'];
     $_SESSION['selectedSite'] = $api_site;
 }
 
@@ -18,30 +20,38 @@ $public = [];
 // Fallback: use known scopes if not set
 if (!$scopes) {
     $scopes = '';
-    if ($_GET['grant_type'] === 'client_credentials') {
+    $grantType = $_GET['grant_type'] ?? '';
+    $clientType = $_GET['client_type'] ?? '';
+    if ($grantType === 'client_credentials') {
         $scopes = SYSTEM_SCOPES;
-    } elseif ($_GET['client_type'] === 'public') {
+    } elseif ($clientType === 'smart') {
+        $scopes = SMART_SCOPES;
+    } elseif ($clientType === 'public') {
         $scopes = PUBLIC_SCOPES;
     } else {
-        $scopes = PRIVATE_SCOPES;
+        $scopes = LIMITED_SCOPES;
     }
 }
 
-// Detect FHIR/standard from granted scopes
-preg_match_all('/(?:user|system)\/([A-Za-z]+)\.read/', $scopes, $matchesRead);
-foreach ($matchesRead[1] as $res) {
-    if (ctype_upper($res[0])) {
-        $fhir[] = $res;
+// Detect FHIR/standard resources from legacy and SMART v2 granular scopes.
+preg_match_all('/(?:user|system|patient)\/([A-Za-z][A-Za-z0-9]*)\.(?:read|r|rs|crus|cruds)/', $scopes, $matches);
+foreach ($matches[1] as $resource) {
+    if (ctype_upper($resource[0])) {
+        $fhir[] = $resource;
     } else {
-        $standard[] = $res;
+        $standard[] = $resource;
     }
 }
 
 // If system grant, include $export scopes as FHIR resources
-if ($_GET['grant_type'] === 'client_credentials') {
+if (($_GET['grant_type'] ?? '') === 'client_credentials') {
     preg_match_all('/system\/([A-Za-z*]+)\.\$export/', SYSTEM_SCOPES, $matchesExport);
     foreach ($matchesExport[1] as $res) {
-        $fhir[] = ($res === '*') ? '$export' : (($res == 'Group') ? "$res/9edd6194-ed11-4507-8fc5-139a779974b9/\$export" : "$res/\$export");
+        // Group/$export needs a real group id; the Bulk $export panel lists them and runs it.
+        if ($res === 'Group') {
+            continue;
+        }
+        $fhir[] = ($res === '*') ? '$export' : "$res/\$export";
     }
 }
 

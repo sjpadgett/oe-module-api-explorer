@@ -1,235 +1,244 @@
 <?php
 
 /**
+ * OAuth and SMART authorization helpers for OpenEMR API Explorer.
+ *
  * @package   OpenEMR API
- * @link      http://www.open-emr.org
+ * @link      https://www.open-emr.org
  * @author    Jerry Padgett <sjpadgett@gmail.com>
- * @copyright Copyright (c) 2025 Jerry Padgett <sjpadgett@gmail.com>
+ * @copyright Copyright (c) 2025-2026 Jerry Padgett <sjpadgett@gmail.com>
  * @license   https://github.com/openemr/openemr/blob/master/LICENSE GNU General Public License 3
  */
-
-// oauth_client.php
-session_start();
 
 require_once 'config.php';
 
 use Lcobucci\JWT\Configuration;
-use Lcobucci\JWT\Signer\Rsa\Sha384;
 use Lcobucci\JWT\Signer\Key\InMemory;
+use Lcobucci\JWT\Signer\Rsa\Sha384;
 
-/**
- * Client Credentials Grant via JWT‐Bearer assertion (lcobucci/jwt).
- */
-function getClientCredentialsToken($client, $api_site): array
+function base64UrlEncode(string $value): string
 {
-    $scope = $client['scope'] ?? SYSTEM_SCOPES;
-    $private_key_path = __DIR__ . "/clients_keys/{$api_site}_private.pem";
-    // Prepare the JWT config
-    if ($_GET['grant'] === 'client_credentials' && $_GET['client'] === 'JWT') {
-        $config = Configuration::forAsymmetricSigner(
-            new Sha384(),
-            InMemory::file($private_key_path), // Private key file
-            InMemory::empty()
-        );
+    return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+}
 
-        // Build and sign the assertion
-        $now = new \DateTimeImmutable();
-        $jti = bin2hex(random_bytes(16));
-        $token = $config->builder()
-            ->issuedBy($client['client_id'])            // iss
-            ->relatedTo($client['client_id'])           // sub
-            ->permittedFor($GLOBALS['ApiConfig']['TOKEN_ENDPOINT'])              // aud
-            ->identifiedBy($jti)                        // jti
-            ->issuedAt($now)
-            ->expiresAt($now->modify('+5 minutes'))
-            ->getToken($config->signer(), $config->signingKey());
+/** @return array<string, mixed> */
+function discoverSmartConfiguration(string $issuer): array
+{
+    $issuer = rtrim($issuer, '/');
+    $url = $issuer . '/.well-known/smart-configuration';
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => false,
+        CURLOPT_FOLLOWLOCATION => true,
+    ]);
+    $raw = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
 
-        $jwt = $token->toString();
-
-        $postData = [
-            'grant_type' => 'client_credentials',
-            'client_id' => $client['client_id'],
-            'client_secret' => $client['client_secret'] ?? '',
-            'scope' => $client['scope'],
-            'client_assertion_type' => 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
-            'client_assertion' => $jwt
-        ];
-    } else {
-        // For private clients, we use client_id and secret directly
-        $postData = [
-            'grant_type' => 'authorization_code',
-            'client_id' => $client['client_id'],
-            'client_secret' => $client['client_secret'] ?? '',
-            'scope' => $scope,
-        ];
+    if ($raw === false) {
+        throw new RuntimeException("SMART discovery failed: {$error}");
     }
-    // Request access token
-    $ch = curl_init($GLOBALS['ApiConfig']['TOKEN_ENDPOINT']);
+    if ($status < 200 || $status >= 300) {
+        throw new RuntimeException("SMART discovery returned HTTP {$status}: {$raw}");
+    }
+
+    $configuration = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($configuration)) {
+        throw new RuntimeException('SMART discovery response was not an object.');
+    }
+    foreach (['authorization_endpoint', 'token_endpoint'] as $required) {
+        if (empty($configuration[$required]) || !is_string($configuration[$required])) {
+            throw new RuntimeException("SMART discovery omitted {$required}.");
+        }
+    }
+    return $configuration;
+}
+
+/** @return array<string, mixed> */
+function requestToken(string $tokenEndpoint, array $postData): array
+{
+    $ch = curl_init($tokenEndpoint);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => http_build_query($postData),
-        CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+        CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded', 'Accept: application/json'],
         CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => false,
     ]);
     $raw = curl_exec($ch);
-    $err = curl_error($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
     curl_close($ch);
 
     if ($raw === false) {
-        throw new Exception("JWT client_credentials error: {$err}");
+        throw new RuntimeException("Token request failed: {$error}");
     }
-
-    $data = json_decode($raw, true) ?: [];
-
-    if (empty($data['access_token'])) {
-        // Surface the error_description if present
-        $desc = $data['error_description']
-            ?? $data['error']
-            ?? 'Unknown';
-        throw new Exception("Token error: {$desc}");
+    $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Token response was not an object.');
     }
+    if ($status < 200 || $status >= 300 || empty($decoded['access_token'])) {
+        $description = $decoded['error_description'] ?? $decoded['error'] ?? $raw;
+        throw new RuntimeException("Token endpoint returned HTTP {$status}: {$description}");
+    }
+    return $decoded;
+}
 
-    $_SESSION['access_token'] = $data['access_token'];
+/** @return array<string, mixed> */
+function getClientCredentialsToken(array $client, string $apiSite): array
+{
+    $privateKeyPath = __DIR__ . "/clients_keys/{$apiSite}_private.pem";
+    $config = Configuration::forAsymmetricSigner(
+        new Sha384(),
+        InMemory::file($privateKeyPath),
+        InMemory::empty()
+    );
+    $now = new DateTimeImmutable();
+    $assertion = $config->builder()
+        ->issuedBy((string)$client['client_id'])
+        ->relatedTo((string)$client['client_id'])
+        ->permittedFor($GLOBALS['ApiConfig']['TOKEN_ENDPOINT'])
+        ->identifiedBy(bin2hex(random_bytes(16)))
+        ->issuedAt($now)
+        ->expiresAt($now->modify('+5 minutes'))
+        ->getToken($config->signer(), $config->signingKey())
+        ->toString();
+
+    $data = requestToken($GLOBALS['ApiConfig']['TOKEN_ENDPOINT'], [
+        'grant_type' => 'client_credentials',
+        'client_id' => $client['client_id'],
+        'scope' => $client['scope'] ?? SYSTEM_SCOPES,
+        'client_assertion_type' => 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+        'client_assertion' => $assertion,
+    ]);
+    storeTokenResponse($data);
     return $data;
 }
 
-/**
- * Authorization Code (with PKCE for public).
- * This function is called when the user clicks the "Authorize" button.
- * It handles both the initial authorization request and the token exchange.
- *
- * @param string $type   The type of client (confidential or public).
- * @param array  $client The client configuration.
- * @return array        The token response.
- * @throws Exception    On cURL error or invalid response.
- */
+/** @param array<string, mixed> $tokenResponse */
+function storeTokenResponse(array $tokenResponse): void
+{
+    $_SESSION['token_response'] = $tokenResponse;
+    $_SESSION['access_token'] = $tokenResponse['access_token'] ?? null;
+    $_SESSION['refresh_token'] = $tokenResponse['refresh_token'] ?? null;
+    $_SESSION['expires_at'] = isset($tokenResponse['expires_in'])
+        ? time() + (int)$tokenResponse['expires_in']
+        : null;
+}
 
+/**
+ * Starts or completes authorization-code flow. EHR launch is selected when the
+ * session contains smart_launch and adds iss/aud/launch to the request.
+ *
+ * @return array<string, mixed>
+ */
 function getAccessTokenViaAuthCode(string $type, array $client): array
 {
-    // If we already have tokens, return them
     if (!empty($_SESSION['token_response'])) {
         return $_SESSION['token_response'];
     }
-    // Exchange code for tokens
+
+    $isSmartLaunch = $type === 'smart' && !empty($_SESSION['smart_launch']);
+    $redirectUri = $isSmartLaunch
+        ? $GLOBALS['ApiConfig']['SMART_REDIRECT_URI']
+        : $GLOBALS['ApiConfig']['REDIRECT_URI'];
+    $tokenEndpoint = $isSmartLaunch
+        ? (string)($_SESSION['smart_configuration']['token_endpoint'] ?? '')
+        : $GLOBALS['ApiConfig']['TOKEN_ENDPOINT'];
+
     if (!empty($_GET['code'])) {
+        $expectedState = $_SESSION['oauth_state'] ?? '';
+        $receivedState = $_GET['state'] ?? '';
+        if (!is_string($receivedState) || !hash_equals((string)$expectedState, $receivedState)) {
+            throw new RuntimeException('OAuth state validation failed.');
+        }
         $postData = [
             'grant_type' => 'authorization_code',
-            'code' => $_GET['code'],
-            'redirect_uri' => $GLOBALS['ApiConfig']['REDIRECT_URI'],
+            'code' => (string)$_GET['code'],
+            'redirect_uri' => $redirectUri,
             'client_id' => $client['client_id'],
         ];
-        if ($type === 'confidential') {
+        if (in_array($type, ['confidential', 'smart'], true) && !empty($client['client_secret'])) {
             $postData['client_secret'] = $client['client_secret'];
         }
-        if ($type === 'public' && !empty($_SESSION['code_verifier'])) {
+        if (!empty($_SESSION['code_verifier'])) {
             $postData['code_verifier'] = $_SESSION['code_verifier'];
         }
-
-        $ch = curl_init($GLOBALS['ApiConfig']['TOKEN_ENDPOINT']);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => http_build_query($postData),
-            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-            CURLOPT_SSL_VERIFYPEER => false,
-        ]);
-        $raw = curl_exec($ch);
-        $decoded = json_decode($raw, true) ?: [];
-        $err = curl_error($ch);
-        curl_close($ch);
-
-        if ($raw === false) {
-            throw new Exception("Auth‑code cURL error: {$err}");
-        }
-
-        if (!empty($decoded['access_token'])) {
-            // Store all tokens
-            $_SESSION['token_response'] = $decoded;
-            $_SESSION['access_token'] = $decoded['access_token'];
-            if (!empty($decoded['refresh_token'])) {
-                $_SESSION['refresh_token'] = $decoded['refresh_token'];
-            }
-        }
+        $decoded = requestToken($tokenEndpoint, $postData);
+        storeTokenResponse($decoded);
         return $decoded;
     }
 
-    // Kick off auth‑code/PKCE
-    $scope = $type === 'confidential' ? PRIVATE_SCOPES : PUBLIC_SCOPES;
-    $url = $GLOBALS['ApiConfig']['AUTHORIZATION_ENDPOINT']
-        . "?response_type=code"
-        . "&client_id=" . urlencode($client['client_id'])
-        . "&redirect_uri=" . urlencode($GLOBALS['ApiConfig']['REDIRECT_URI'])
-        . "&scope=" . urlencode($scope)
-        . "&state=explorer";
+    $authorizationEndpoint = $isSmartLaunch
+        ? (string)($_SESSION['smart_configuration']['authorization_endpoint'] ?? '')
+        : $GLOBALS['ApiConfig']['AUTHORIZATION_ENDPOINT'];
+    // Ask for what the client was registered with. Register Clients leaves out scopes the
+    // server does not publish, so the constants can be wider than the registration -- and a
+    // request beyond the registration is refused.
+    $scope = !empty($client['scope']) && is_string($client['scope'])
+        ? $client['scope']
+        : ($type === 'smart'
+            ? SMART_SCOPES
+            : ($type === 'confidential' ? LIMITED_SCOPES : PUBLIC_SCOPES));
 
-    if ($type === 'public') {
-        $verifier = bin2hex(random_bytes(32));
-        $_SESSION['code_verifier'] = $verifier;
-        $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
-        $url .= "&code_challenge={$challenge}&code_challenge_method=S256";
+    $state = base64UrlEncode(random_bytes(32));
+    $verifier = base64UrlEncode(random_bytes(64));
+    $_SESSION['oauth_state'] = $state;
+    $_SESSION['code_verifier'] = $verifier;
+    $_SESSION['client_type'] = $type;
+
+    $params = [
+        'response_type' => 'code',
+        'client_id' => $client['client_id'],
+        'redirect_uri' => $redirectUri,
+        'scope' => $scope,
+        'state' => $state,
+        'code_challenge' => base64UrlEncode(hash('sha256', $verifier, true)),
+        'code_challenge_method' => 'S256',
+    ];
+    if ($isSmartLaunch) {
+        $params['aud'] = (string)$_SESSION['smart_issuer'];
+        $params['launch'] = (string)$_SESSION['smart_launch'];
     }
 
-    header("Location: {$url}");
+    header('Location: ' . $authorizationEndpoint . '?' . http_build_query($params));
     exit;
 }
 
-/**
- * Checks if current access token is expired.
- */
 function isTokenExpired(): bool
 {
-    return isset($_SESSION['expires_at']) && time() >= $_SESSION['expires_at'];
+    return isset($_SESSION['expires_at']) && is_int($_SESSION['expires_at']) && time() >= $_SESSION['expires_at'];
 }
 
-/**
- * Attempts to refresh access token using stored refresh token.
- */
 function refreshAccessToken(array $client): ?string
 {
     if (empty($_SESSION['refresh_token'])) {
         return null;
     }
-
+    $tokenEndpoint = (string)($_SESSION['smart_configuration']['token_endpoint']
+        ?? $GLOBALS['ApiConfig']['TOKEN_ENDPOINT']);
     $postData = [
         'grant_type' => 'refresh_token',
         'refresh_token' => $_SESSION['refresh_token'],
         'client_id' => $client['client_id'],
-        'client_secret' => $client['client_secret'] ?? '',
     ];
-
-    $ch = curl_init($GLOBALS['ApiConfig']['TOKEN_ENDPOINT']);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => http_build_query($postData),
-        CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-        CURLOPT_SSL_VERIFYPEER => false
-    ]);
-    $response = curl_exec($ch);
-    curl_close($ch);
-
-    $result = json_decode($response, true);
-    if (!isset($result['access_token'])) {
-        return null;
+    if (!empty($client['client_secret'])) {
+        $postData['client_secret'] = $client['client_secret'];
     }
-
-    $_SESSION['access_token'] = $result['access_token'];
-    $_SESSION['refresh_token'] = $result['refresh_token'] ?? $_SESSION['refresh_token'];
-    $_SESSION['expires_at'] = isset($result['expires_in']) ? time() + $result['expires_in'] : null;
-
-    return $_SESSION['access_token'];
+    $result = requestToken($tokenEndpoint, $postData);
+    storeTokenResponse($result);
+    return (string)$result['access_token'];
 }
 
-/**
- * @return void
- */
 function ensureClientKeysDir(): void
 {
     $dir = __DIR__ . '/clients_keys';
-    if (!is_dir($dir)) {
-        if (!mkdir($dir, 0700, true)) {
-            throw new RuntimeException("Failed to create clients_keys directory.");
-        }
+    if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+        throw new RuntimeException('Failed to create clients_keys directory.');
     }
 }

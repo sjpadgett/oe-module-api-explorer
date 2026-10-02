@@ -1,0 +1,15 @@
+# Private keys and client secrets live here. Nothing in this folder is served, except the
+# public key sets, which OpenEMR fetches when 'use_keys_file' is on.
+<IfModule mod_authz_core.c>
+    Require all denied
+    <FilesMatch "_jwks\.json$">
+        Require all granted
+    </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+    <FilesMatch "_jwks\.json$">
+        Allow from all
+    </FilesMatch>
+</IfModule>
