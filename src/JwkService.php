@@ -8,10 +8,14 @@ class JwkService
     private $privateKeyPath;
     private $publicKeyPath;
     private $jwksPath;
+    private string $api_site;
 
     public function __construct(string $baseDir, $api_site = 'localhost')
     {
-        $this->dir = rtrim($baseDir, '/');
+        $this->dir = rtrim($baseDir, '/\\');
+        if (!is_dir($this->dir . '/clients_keys') && !mkdir($this->dir . '/clients_keys', 0700, true) && !is_dir($this->dir . '/clients_keys')) {
+            throw new \RuntimeException('Unable to create clients_keys directory.');
+        }
         $this->privateKeyPath = $this->dir . "/clients_keys/{$api_site}_private.pem";
         $this->publicKeyPath = $this->dir . "/clients_keys/{$api_site}_public.pem";
         $this->jwksPath = $this->dir . "/clients_keys/{$api_site}_jwks.json";
@@ -30,10 +34,15 @@ class JwkService
             if (!$res) {
                 throw new \RuntimeException("Failed to generate RSA key pair.");
             }
-            openssl_pkey_export($res, $privKey);
+            if (!openssl_pkey_export($res, $privKey)) {
+                throw new \RuntimeException('Failed to export RSA private key.');
+            }
             file_put_contents($this->privateKeyPath, $privKey);
             $this->out("Private key generated and saved to {$this->privateKeyPath}");
             $pubDetails = openssl_pkey_get_details($res);
+            if (!is_array($pubDetails) || empty($pubDetails['key'])) {
+                throw new \RuntimeException('Failed to export RSA public key.');
+            }
             file_put_contents($this->publicKeyPath, $pubDetails['key']);
             $this->out("Public key generated and saved to {$this->publicKeyPath}");
         } else {
@@ -67,7 +76,8 @@ class JwkService
         if (!file_exists($this->jwksPath)) {
             throw new \RuntimeException("JWKS file not found at {$this->jwksPath}");
         }
-        return json_decode(file_get_contents($this->jwksPath), true);
+        $decoded = json_decode((string)file_get_contents($this->jwksPath), true, 512, JSON_THROW_ON_ERROR);
+        return is_array($decoded) ? $decoded : [];
     }
 
     /**

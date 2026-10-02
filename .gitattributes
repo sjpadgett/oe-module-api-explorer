@@ -1,0 +1,22 @@
+# Line endings: LF in the repository and in the working tree, on every platform.
+# Overrides each developer's core.autocrlf, so Windows checkouts stay LF too.
+* text=auto eol=lf
+
+*.php   text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.txt   text eol=lf
+.htaccess     text eol=lf
+.gitignore    text eol=lf
+.gitattributes text eol=lf
+LICENSE       text eol=lf
+
+# Never touch these
+*.pem   binary
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.ico   binary
+*.zip   binary

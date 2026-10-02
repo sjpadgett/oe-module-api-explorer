@@ -1,0 +1,15 @@
+# Your sites and options -- copy config.local.sample.php to config.local.php
+/config.local.php
+
+# Generated at Register Clients: private keys, JWKS and client secrets. Never commit these.
+/clients_keys/*
+!/clients_keys/.gitkeep
+!/clients_keys/.htaccess
+!/clients_keys/README.md
+
+# Editors and OS
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+*.swp

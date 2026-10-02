@@ -1,184 +1,191 @@
-- Best to install in openemr/modules or at least 2 levels above root.
-- i.e. openemr/modules/oe-module-api-explorer
+# OpenEMR API Explorer
 
-# OpenEMR FHIR/API Client Explorer Web App
+A browser tool for learning, exercising and testing OpenEMR's OAuth2, SMART on FHIR, FHIR and
+standard REST APIs. It registers its own API clients, walks every grant type, reads and writes
+resources, and checks that the scopes a token carries are the scopes the server enforces.
 
-This example project demonstrates how to interact with the OpenEMR OAuth2, FHIR, and Standard REST APIs using various OAuth2 grant types. It provides a working reference implementation for developers building apps that integrate with OpenEMR’s API infrastructure.
+It's a working reference for anyone building an app against OpenEMR, and a test bench for anyone
+changing the API itself.
 
-- The code is designed to be educational, showcasing best practices for OAuth2 client registration, token management, and API interaction.
-- I used AI ChatGPT to help refine the code, ensuring it adheres to OpenEMR standards including help creating this README. Sure could have used it 40 years ago! 😄
-- I've dedicated this project to the OpenEMR community to help you learn and experiment with OAuth2 authentication, FHIR resources, and standard API endpoints.
+> **Development tool.** It skips the OpenEMR login, keeps client secrets and private keys on disk,
+> and turns off TLS verification so self-signed dev certificates work. Run it on a development
+> install with test data. See [SECURITY.md](SECURITY.md).
 
----
-
-## 📌 Project Purpose
-
-This explorer is built for intermediate developers to learn and experiment with OpenEMR's OAuth2-secured APIs — including FHIR and standard (non-FHIR) endpoints. The goal is to enable developers to:
-
-- Register new public, confidential, or JWT clients
-- Authenticate using several OAuth2 grant types
-- Query real-time API resources like `Patient`, `Encounter`, etc.
-- Learn by example for future integration projects
+Dedicated to the OpenEMR community. *Jerry Padgett*
 
 ---
 
-## 🚀 Features
+## What you get
 
-### ✅ OAuth2 Grant Types Supported
-- **Authorization Code** (with PKCE for public clients)
-- **Client Credentials** (for system-to-system apps)
-- **Refresh Token** (auto-refreshes access token when expired)
-- **JWT Client Credentials** (`client_secret_post`) — Supports both inline key-pair and JWKS URI
+| Panel | What it does |
+|---|---|
+| **Request** | Pick a client, grant, API and resource, add a query, and fetch. Shows the raw response. |
+| **Bulk $export** | Lists Groups, starts a Group `$export`, polls it, and lists the NDJSON files. |
+| **FHIR writes** | POST / PUT workbench for 22 writable resources, with a full POST → PUT → verify round trip. |
+| **FHIR write stress** | Fires many writes at once and reports latency, status spread and duplicate ids. |
+| **Scope Lab** | Tests SMART v1, v2 and mixed scope sets across grant types: what was granted, and what is enforced. |
+| **SMART launch workspace** | Appears when OpenEMR launches the Explorer as a SMART app: launch context, patient, questionnaires. |
 
-### ✅ Client Registration
-- Automatically registers `confidential`, `public`, or `JWT` clients with OpenEMR
-- JWT registration:
-  - Auto-generates RSA key pair (`private.pem`, `public.pem`)
-  - Uses either embedded `jwks` or `jwks_uri`, depending on config
-  - JWKS and PEM paths are saved in `client_JWT.json`
-- No need to go to the command line or use shell commands — keygen uses OpenEMR-compatible PHP OpenSSL
-- CLI and browser support (`--regen` or `?regen=1`)
-- Smart fallback: If `use_keys_file` is false, SSL is not required and `jwks_uri` is omitted
+Clients and grants covered:
 
-### ✅ API Modes
-- **FHIR API**: Uses OpenEMR’s `/apis/default/fhir`
-- **Standard API**: Uses `/apis/default/api`
-
-### ✅ UI Behavior
-- Grant type is automatically updated when client type changes:
-  - `JWT` forces `client_credentials`
-  - `public` forces `authorization_code`
-  - `confidential` supports all three (`authorization_code`, `client_credentials`, `refresh_token`)
-- Resource list dynamically updates based on selected client/scopes
+| Client | Grant | Typical use |
+|---|---|---|
+| Confidential | Authorization Code (+ refresh) | Provider-facing apps. Carries the write scopes. |
+| Public | Authorization Code with PKCE | Patient-facing and browser apps. |
+| JWT | Client Credentials (signed assertion) | Backend services, bulk export. |
+| SMART EHR Launch | Authorization Code with `launch` | Apps launched from inside OpenEMR. |
 
 ---
 
-## ⚙️ Dynamic Configuration with `$GLOBALS['ApiConfig']`
+## Quick start
 
-Instead of using `define()`, the explorer uses a dynamic global configuration array that adjusts automatically when switching sites or grant types.
+You need a running OpenEMR development install (8.0 or current master; PHP 8.2+).
+
+**1. Put the folder two levels below the OpenEMR root**
+
+```bash
+cd /path/to/openemr
+mkdir -p devtools
+git clone https://github.com/sjpadgett/oe-module-api-explorer.git devtools/oe-module-api-explorer
+```
+
+**2. Turn the APIs on in OpenEMR** (Admin → Config → Connectors)
+
+- Site Address (required for OAuth2 and FHIR): the URL you browse OpenEMR at
+- Enable OpenEMR Standard REST API
+- Enable OpenEMR Standard FHIR REST API
+- Enable OpenEMR FHIR System Scopes (needed for the JWT client and bulk export)
+
+**3. Open the Explorer**
+
+```
+https://localhost/openemr/devtools/oe-module-api-explorer/oeApiExplorer.php
+```
+
+**4. Click Register Clients.** This creates the key pair and the four clients, and enables them.
+
+**5. Pick Confidential + Authorization Code + FHIR + Patient, and click Fetch.** Log in, approve
+the scopes, and the Patient bundle comes back.
+
+If your OpenEMR isn't at `https://localhost/openemr`, copy `config.local.sample.php` to
+`config.local.php` and set your URL there first. Details are in [INSTALLATION.md](INSTALLATION.md).
+
+---
+
+## Configuration
+
+All your settings go in **`config.local.php`**, which git ignores. Don't edit `config.php` for
+this: you'd get conflicts on every pull.
+
+```bash
+cp config.local.sample.php config.local.php
+```
 
 ```php
-$GLOBALS['ApiConfig'] = [
-  'JWKS_LOCATION_URL'        => "{$base_path}/clients_keys/{$site}_jwks.json",
-  'AUTHORIZATION_ENDPOINT'   => "{$base_path}/oauth2/default/authorize",
-  'TOKEN_ENDPOINT'           => "{$base_path}/oauth2/default/token",
-  'LOGOUT_REDIRECT_URI'      => "{$base_path}/oauth2/default/logout.php",
-  'REGISTER_CLIENT_ENDPOINT' => "{$base_path}/oauth2/default/registration",
-  'FHIR_SERVER_URL'          => "{$base_path}/apis/default/fhir",
-  'API_SERVER_URL'           => "{$base_path}/apis/default/api",
-  'REDIRECT_URI'             => "{$app_path}/oeApiExplorer.php"
+return [
+    'sites' => [
+        'localhost' => 'https://localhost/openemr',
+        'docker'    => 'https://localhost:9300',
+    ],
+    'default_site' => 'localhost',
 ];
 ```
 
-Use the values anywhere via:
+| Key | Default | Meaning |
+|---|---|---|
+| `sites` | `localhost` → `https://localhost/openemr` | Servers in the Site dropdown: name → base URL |
+| `default_site` | first site | Site selected on first load |
+| `openemr_site` | `default` | OpenEMR multisite id in the API paths |
+| `use_keys_file` | `false` | Register a `jwks_uri` instead of sending the key set inline |
+| `observation_write` | `true` | Ask for `user/Observation.write` |
+| `allow_remote` | `false` | Answer requests from outside this machine / private networks |
+| `app_url` | derived | Public URL of this folder, for reverse proxies |
 
-```php
-$GLOBALS['ApiConfig']['FHIR_SERVER_URL']
+Register clients once per site. A site name starting with `remote-` means "this install can't
+reach that server's database": existing clients there are left alone, and you enable the new
+ones on that server (Admin → System → API Clients).
+
+**Scopes** each client asks for are constants in `config.php` (`SYSTEM_SCOPES`, `LIMITED_SCOPES`,
+`PUBLIC_SCOPES`, `SMART_SCOPES`, and the read/write sets appended to `LIMITED_SCOPES`).
+Register Clients compares them with the server's published list and leaves out anything the
+server doesn't offer, so one checkout works across OpenEMR versions. After changing a scope
+constant, run Register Clients again and get a new token.
+
+---
+
+## Guides
+
+| Document | Read it for |
+|---|---|
+| [INSTALLATION.md](INSTALLATION.md) | Full setup, Docker and reverse-proxy notes, troubleshooting |
+| [FHIR_WRITES.md](FHIR_WRITES.md) | The write workbench, the resource catalog, Observation variants, stress testing |
+| [SCOPE_LAB.md](SCOPE_LAB.md) | Scope profiles, how grants and enforcement are judged, reading the results |
+| [SMART_TESTING.md](SMART_TESTING.md) | Launching the Explorer from OpenEMR as a SMART app |
+| [SECURITY.md](SECURITY.md) | What this tool bypasses and how to keep it contained |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Adding a resource, a scope profile or a panel |
+| [CHANGELOG.md](CHANGELOG.md) | What changed |
+
+The same help is available inside the Explorer, at the bottom of the page.
+
+---
+
+## How it fits together
+
+```
+oeApiExplorer.php        main page: session bar, Request panel, includes the cards
+  ui_panel.php           collapsible panel helper
+  oauth_client.php       authorization-code, client-credentials and refresh flows
+  scope_resources.php    resource dropdown, built from the client's scopes
+  smart_launch.php       SMART EHR launch entry (iss + launch)
+  group_export.php       Bulk $export endpoint
+
+client_register.php      key pair + dynamic registration of the four clients
+src/JwkService.php       RSA key pair and JWKS
+
+fhir_write_card.php      FHIR writes panel
+fhir_write.php           its endpoint: catalog, context, seed, send, verify
+fhir_write_templates.php the write catalog: bodies, scopes, ACLs, variants
+fhir_write_seeds.php     prerequisite fixtures for an empty install
+fhir_stress_card.php     stress panel
+fhir_stress.php          its endpoint (curl_multi fan-out)
+
+scope_lab_card.php       Scope Lab panel
+scope_lab.php            its endpoint
+scope_lab_lib.php        registration, tokens, probes, verdicts
+scope_lab_profiles.php   the scope sets under test
+scope_lab_callback.php   OAuth redirect for Scope Lab clients
+src/ScopeAlgebra.php     SMART v1/v2 scope parsing and comparison
+
+config.php               defaults, endpoint map, scope constants
+config.local.sample.php  copy to config.local.php
+clients_keys/            generated keys and client credentials (git-ignored)
 ```
 
-
-**💡 Notes:**
-- If `$use_keys_file = true`: JWKS file must be served via HTTPS with a valid certificate
-- If `false`: Uses inline JWKS, avoids SSL issues and file permissions
+Access tokens stay in the PHP session. The browser sends request bodies and gets results back;
+it never holds a token or a client secret.
 
 ---
 
-## 🧪 Usage Instructions
+## Requirements
 
-1. **Edit `config.php`**
-   - Set your OpenEMR domain, API paths, and `$use_keys_file` option
+- OpenEMR 8.0 or current master, with the REST and FHIR APIs enabled
+- PHP 8.2+ with the curl and openssl extensions
+- HTTPS on the OpenEMR site (OAuth2 requires it; a self-signed certificate is fine)
+- An OpenEMR user with broad ACLs for the write panels. An administrator covers every route.
 
-2. **Run `client_register.php`**
-   - Registers JWT, confidential, and public clients
-   - CLI:  
-     ```bash
-     php client_register.php --regen
-     ```
-   - Browser:  
-     ```
-     https://your-openemr/modules/oe-module-api-explorer/client_register.php?regen=1
-     ```
-
-3. **Explore via `oeApiExplorer.php`**
-   - Choose client type → grant type auto syncs
-   - Select FHIR or Standard API
-   - Pick a resource (e.g. Patient, Encounter)
+No Composer install and no build step: it uses the libraries OpenEMR already ships.
 
 ---
 
-## 🔐 Token Handling
+## Contributing and support
 
-- Tokens are stored in `$_SESSION`
-- Automatically refreshed when `refresh_token` is present
-- JWT clients use `lcobucci/jwt` to sign requests with generated `private.pem`
-- JWKS is exposed via URI or embedded in client registration depending on `$use_keys_file`
+Issues and pull requests are welcome at
+<https://github.com/sjpadgett/oe-module-api-explorer>. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
----
+This is a community project and not an official OpenEMR product.
 
-## 📁 File Overview
+## License
 
-| File                      | Purpose                                                  |
-|---------------------------|-----------------------------------------------------------|
-| `client_register.php`     | Registers clients and generates key pairs / JWKS         |
-| `oeApiExplorer.php`       | UI for exploring API resources via interactive interface |
-| `oauth_client.php`        | OAuth2 token exchange and refresh logic                  |
-| `config.php`              | Defines environment-specific settings and toggle flags   |
-| `src/JwkService.php`      | Generates RSA key pair and builds JWKS for JWT clients   |
-| `client_*.json`           | Stores registered client credentials                     |
+GNU General Public License v3. See [LICENSE](LICENSE).
 
----
-
-## 🔧 Requirements
-
-- OpenEMR 7+ with OAuth2 and FHIR APIs enabled
-- PHP 7.4+ / 8.x with OpenSSL extension
-- MySQL or MariaDB backend
-- HTTPS recommended for production and required if `$use_keys_file = true`
-
----
-
-## 🙌 Contributing
-
-PRs and feedback are welcome.  
-This tool was created to empower the OpenEMR developer community.
-
----
-
-© 2025 Jerry Padgett — [sjpadgett@gmail.com](mailto:sjpadgett@gmail.com)
-
-## 📜 License
-
-This project is a community-contributed example provided for educational purposes.  
-It is not an official OpenEMR module. You are free to use, modify, and extend it as needed.
----
-
-## 🌐 Multi-Site and Grant-Aware Context
-
-This explorer now supports multiple OpenEMR sites and dynamically adjusts key behaviors:
-
-- Site dropdown lets you target `localhost`, `docker`, or remote domains
-- Each combination of site + grant type stores a unique client file:
-  - `client_docker_client_credentials.json`
-  - `clients_keys/docker_jwks.json`
-- The explorer rebuilds paths and keys on-the-fly when switching context
-
-## ⚙️ Dynamic Configuration with $GLOBALS['ApiConfig']
-
-Static defines have been replaced with a runtime-safe global config array:
-
-```php
-$GLOBALS['ApiConfig']['FHIR_SERVER_URL'] = "{$base_path}/apis/default/fhir";
-```
-
-This allows `config.php` to be reloaded at any time with new `$base_path` or `$app_path`, and all references update live.
-
-## 📁 Client Storage
-
-- Clients and JWKS are stored in `/clients_keys`
-- If missing, the directory is automatically created with secure permissions
-- PEM keys and JWKS files are named per site
-
-## 🛡️ Session Handling
-
-- Sessions are started explicitly in all entry points
-- Ensures state (`client`, `grant`, `site`, `tokens`) persists through the Auth Code redirect
+© 2025-2026 Jerry Padgett
