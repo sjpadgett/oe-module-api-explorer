@@ -121,11 +121,17 @@ declare(strict_types=1);
     // Substitute {{placeholders}} anywhere in the template, at any depth. {{effective}} is
     // generated once per call, so one body carries one timestamp wherever it appears.
     function fill (value, effective) {
-        const stamp = effective || freshEffective();
+        // One object per body, so every placeholder in it sees the same generated values.
+        const stamp = effective || {
+            effective: freshEffective(),
+            // Any day in the last ~25 years: Coverage refuses a second policy of the same type
+            // with the same start date for a patient.
+            uniqueDate: new Date(Date.now() - (1 + Math.floor(Math.random() * 9000)) * 86400000).toISOString().slice(0, 10)
+        };
         if (typeof value === 'string') {
             return value.replace(/{{(\w+)}}/g, (whole, key) => {
-                if (key === 'effective') {
-                    return stamp;
+                if (Object.prototype.hasOwnProperty.call(stamp, key)) {
+                    return stamp[key];
                 }
                 return context[key] != null ? context[key] : whole;
             });

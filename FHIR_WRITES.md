@@ -73,7 +73,13 @@ a repeat POST of the same reading and a PUT that moves the date must both be ref
 `{{patient}}` `{{practitioner}}` `{{encounter}}` `{{facility}}` `{{orgProvider}}`
 `{{orgInsurer}}` `{{questionnaire}}` come from the resolved context. `{{unique}}` and
 `{{uniqueDigits}}` keep repeat runs from colliding on natural keys such as an NPI.
-`{{effective}}` is a fresh past timestamp per body.
+`{{effective}}` is a fresh past timestamp per body, and `{{uniqueDate}}` a random past date
+(Coverage refuses a second policy of the same type with the same start date).
+
+`{{facility}}` and `{{orgProvider}}` are the same id: the Organization of a row in `facility`.
+It's found through `Location.managingOrganization` (the primary business entity), or failing
+that the first provider Organization that has an address or phone. Procedure providers are also
+type `prov` but have neither.
 
 ### Adding a resource
 

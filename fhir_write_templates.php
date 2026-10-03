@@ -12,6 +12,7 @@
  *   {{patient}} {{practitioner}} {{encounter}} {{orgProvider}} {{orgInsurer}}
  *   {{facility}} {{questionnaire}} {{unique}} {{uniqueDigits}}
  *   {{effective}}  a fresh past timestamp, generated per body (not from the context call)
+ *   {{uniqueDate}} a random past date (YYYY-MM-DD), generated per body
  *
  * Keys per resource:
  *   scope     the OAuth scope the token must carry
@@ -167,7 +168,9 @@ return [
             'beneficiary' => ['reference' => 'Patient/{{patient}}'],
             'payor' => [['reference' => 'Organization/{{orgInsurer}}']],
             'relationship' => ['coding' => [['system' => 'http://terminology.hl7.org/CodeSystem/subscriber-relationship', 'code' => 'self', 'display' => 'Self']]],
-            'period' => ['start' => '2024-01-01', 'end' => '2099-12-31'],
+            // {{uniqueDate}}: a policy of the same type with the same effective date for the same
+            // patient is refused as a duplicate, so a fixed start date fails on every run after the first.
+            'period' => ['start' => '{{uniqueDate}}', 'end' => '2099-12-31'],
             'order' => 1,
             'class' => [
                 ['type' => ['coding' => [['system' => 'http://terminology.hl7.org/CodeSystem/coverage-class', 'code' => 'group', 'display' => 'Group']]], 'value' => 'explorer-group-{{unique}}'],
