@@ -200,32 +200,62 @@ function organizationHasType(array $organization, array $codes): bool
 }
 
 /**
- * The first `prov` Organization that is actually a facility.
+ * Finds an Organization that is a row in `facility`.
  *
- * `prov` is emitted by two different services -- FhirOrganizationFacilityService (rows in
- * `facility`) and FhirOrganizationProcedureProviderService (rows in `procedure_providers`) --
- * so the type coding alone cannot tell them apart, and a procedure provider's uuid is not a
- * pc_facility an Appointment can reference. A facility is exposed a second time as a Location
- * off the same uuid; a procedure provider is not. Probing that read is what makes the choice
- * deterministic instead of dependent on search order.
+ * Appointment and PractitionerRole writes resolve their Location / Organization reference
+ * against `facility`.`uuid`, so that is the id needed. The trouble is telling a facility
+ * from a procedure provider: FhirOrganizationFacilityService and
+ * FhirOrganizationProcedureProviderService both emit type `prov`.
  *
- * @param list<string> $candidates
+ * (An earlier version probed GET /Location/<organization id>. That can never succeed: a
+ * Location's id is its own uuid_mapping row, not the facility's uuid.)
+ *
+ * Two signals, in order:
+ *   1. Location.managingOrganization. FhirLocationService sets it on every Location to the
+ *      primary business entity, which is always a facility.
+ *   2. Shape. A facility Organization carries an address and telecom; a procedure provider
+ *      carries only a name and an NPI.
+ *
+ * @return array{id: ?string, how: ?string, code: int, provCount: int}
  */
-function firstFacilityBackedOrganization(array $candidates, string $fhirBase, string $access): ?string
+function resolveFacilityOrganization(string $fhirBase, string $access): array
 {
-    foreach ($candidates as $candidate) {
-        $probe = fhirCall(
-            'GET',
-            "{$fhirBase}/Location/" . rawurlencode($candidate),
-            $access,
-            ['Accept: application/fhir+json']
-        );
-        if ($probe['code'] === 200) {
-            return $candidate;
+    $accept = ['Accept: application/fhir+json'];
+
+    $locations = fhirCall('GET', "{$fhirBase}/Location?_count=5", $access, $accept);
+    $bundle = $locations['code'] === 200 ? json_decode($locations['body'], true) : null;
+    foreach (is_array($bundle) && is_array($bundle['entry'] ?? null) ? $bundle['entry'] : [] as $entry) {
+        $reference = is_array($entry) ? ($entry['resource']['managingOrganization']['reference'] ?? null) : null;
+        if (is_string($reference) && preg_match('~(?:^|/)Organization/([A-Za-z0-9.-]+)$~', $reference, $m) === 1) {
+            $check = fhirCall('GET', "{$fhirBase}/Organization/" . rawurlencode($m[1]), $access, $accept);
+            if ($check['code'] === 200) {
+                return ['id' => $m[1], 'how' => 'Location.managingOrganization', 'code' => 200, 'provCount' => 1];
+            }
         }
     }
 
-    return null;
+    $organizations = fhirCall('GET', "{$fhirBase}/Organization?_count=100", $access, $accept);
+    $bundle = $organizations['code'] === 200 ? json_decode($organizations['body'], true) : null;
+    $provCount = 0;
+    foreach (is_array($bundle) && is_array($bundle['entry'] ?? null) ? $bundle['entry'] : [] as $entry) {
+        $organization = is_array($entry) && is_array($entry['resource'] ?? null) ? $entry['resource'] : null;
+        if ($organization === null || !organizationHasType($organization, ['Prov'])) {
+            continue;
+        }
+        $provCount++;
+        $hasAddress = false;
+        foreach (is_array($organization['address'] ?? null) ? $organization['address'] : [] as $address) {
+            if (is_array($address) && array_intersect_key($address, array_flip(['line', 'city', 'state', 'postalCode'])) !== []) {
+                $hasAddress = true;
+                break;
+            }
+        }
+        if (($hasAddress || !empty($organization['telecom'])) && is_string($organization['id'] ?? null)) {
+            return ['id' => $organization['id'], 'how' => 'provider Organization with an address', 'code' => 200, 'provCount' => $provCount];
+        }
+    }
+
+    return ['id' => null, 'how' => null, 'code' => $organizations['code'], 'provCount' => $provCount];
 }
 
 /**
@@ -311,22 +341,23 @@ try {
 
             $patient = $resolve('patient', 'Patient', "{$fhirBase}/Patient?_count=1");
 
-            // A facility is exposed twice off the same `facility`.`uuid`: as an
-            // Organization of type Prov, and as a Location. Resolving it through the
-            // Organization is what makes it usable as an Appointment.serviceProvider --
-            // FHIR Location also covers patient home addresses, and picking one of those
-            // gives a uuid that is not in the facility table.
-            $provOrgs = firstBundleEntry(
-                "{$fhirBase}/Organization?_count=50",
-                $access,
-                static fn(array $o): bool => organizationHasType($o, ['Prov']),
-                true
-            );
-            $facility = firstFacilityBackedOrganization($provOrgs['ids'], $fhirBase, $access);
-            $facilityReason = contextFailureReason($provOrgs, 'Organization', true);
-            if ($facilityReason === null && $facility === null) {
-                $facilityReason = count($provOrgs['ids']) . ' provider Organization(s) found, none backed by a facility'
-                    . ' (they are procedure providers) - add a facility under Administration > Facilities';
+            // Appointment and PractitionerRole both resolve their reference against
+            // `facility`.`uuid`, which is the id of the facility's Organization.
+            $facilityLookup = resolveFacilityOrganization($fhirBase, $access);
+            $facility = $facilityLookup['id'];
+            $facilityReason = null;
+            if ($facility === null) {
+                if ($facilityLookup['code'] === 401 || $facilityLookup['code'] === 403) {
+                    $facilityReason = "HTTP {$facilityLookup['code']} - your token carries no user/Organization.read scope";
+                } elseif ($facilityLookup['code'] !== 200) {
+                    $facilityReason = "the Organization search answered HTTP {$facilityLookup['code']}";
+                } elseif ($facilityLookup['provCount'] === 0) {
+                    $facilityReason = 'no provider Organization found - add a facility under Admin > Clinic > Facilities, or use Create missing fixtures';
+                } else {
+                    $facilityReason = $facilityLookup['provCount'] . ' provider Organization(s) found, but none could be identified as a facility:'
+                        . ' no Location names a managing organization (no facility is flagged Primary Business Entity)'
+                        . ' and none has an address or phone. Give a facility an address, or flag one as Primary Business Entity';
+                }
             }
             if ($facilityReason !== null) {
                 $reasons['facility'] = $facilityReason;

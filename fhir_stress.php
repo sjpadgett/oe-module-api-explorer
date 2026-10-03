@@ -401,6 +401,10 @@ try {
     // effectiveDateTime is refused too.
     $effectiveBase = time() - random_int(3600, 90 * 86400);
     $effectiveFor = static fn(int $iteration): string => gmdate('Y-m-d\TH:i:s\Z', $effectiveBase + $iteration);
+    // {{uniqueDate}}: a different day per iteration, for natural keys that include a date
+    // (Coverage refuses a second policy of the same type with the same start date).
+    $dateBase = time() - random_int(400, 9000) * 86400;
+    $dateFor = static fn(int $iteration): string => gmdate('Y-m-d', $dateBase - $iteration * 86400);
 
     $createRequests = [];
     for ($i = 0; $i < $iterations; $i++) {
@@ -412,6 +416,7 @@ try {
             $context['unique'] = $plan['tag'] . '-' . $i;
             $context['uniqueDigits'] = str_pad((string) random_int(0, 9999999999), 10, '0', STR_PAD_LEFT);
             $context['effective'] = $effectiveFor($i);
+            $context['uniqueDate'] = $dateFor($i);
             $payload = json_encode(stressFill($entry['body'], $context), JSON_UNESCAPED_SLASHES);
             $createRequests[] = [
                 'method' => 'POST',
@@ -447,6 +452,7 @@ try {
             $context['unique'] = $plan['tag'] . '-' . $result['meta']['iteration'] . '-put';
             $context['uniqueDigits'] = str_pad((string) random_int(0, 9999999999), 10, '0', STR_PAD_LEFT);
             $context['effective'] = $effectiveFor((int) $result['meta']['iteration']);
+            $context['uniqueDate'] = $dateFor((int) $result['meta']['iteration']);
             $body = stressFill($entry['body'], $context);
             if (is_array($body)) {
                 $body['id'] = $id;
